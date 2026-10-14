@@ -11,9 +11,11 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db.models import Schedule, ScheduleSource, Source
 from app.services.delivery import DeliveryService
 from app.services.digest import DigestService
+from app.services.podcast import PodcastService
 from app.services.schedule import ScheduleService
 
 logger = logging.getLogger(__name__)
@@ -80,14 +82,17 @@ class ScheduleRunner:
         digest = DigestService.save_digest(db, schedule.id, content)
         ScheduleService.mark_schedule_run(db, schedule.id)
 
+        # Optional and best-effort: the text digest ships whatever happens here.
+        episode = PodcastService.build_episode(content, language=schedule.language)
+
         return RunResult(
             digest_id=digest.id,
             articles_processed=len(articles),
-            deliveries=ScheduleRunner._deliver(schedule, content),
+            deliveries=ScheduleRunner._deliver(schedule, content, episode=episode),
         )
 
     @staticmethod
-    def _deliver(schedule: Schedule, content: str) -> dict[str, str]:
+    def _deliver(schedule: Schedule, content: str, episode: bytes | None = None) -> dict[str, str]:
         results: dict[str, str] = {}
         for channel in schedule.delivery_channels:
             if not channel.is_enabled:
@@ -95,9 +100,18 @@ class ScheduleRunner:
             try:
                 config = json.loads(channel.config) if isinstance(channel.config, str) else channel.config
                 if channel.type == "discord":
-                    ok = DeliveryService.deliver_via_discord(
-                        webhook_url=config.get("webhook_url"), content=content
-                    )
+                    webhook_url = config.get("webhook_url")
+                    ok = DeliveryService.deliver_via_discord(webhook_url=webhook_url, content=content)
+                    if ok and episode:
+                        # A failed upload must not mark the digest itself as failed.
+                        sent = DeliveryService.deliver_file_via_discord(
+                            webhook_url=webhook_url,
+                            filename=PodcastService.episode_filename(),
+                            data=episode,
+                            content="🎧 Audio digest",
+                            max_bytes=settings.PODCAST_MAX_BYTES,
+                        )
+                        results["podcast"] = "sent" if sent else "failed"
                 elif channel.type == "email":
                     ok = DeliveryService.deliver_via_email(
                         email=config.get("email"),

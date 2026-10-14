@@ -34,6 +34,15 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = ""
     SENDGRID_API_KEY: str = ""
 
+    # Audio digest: off unless switched on AND GOOGLE_APPLICATION_CREDENTIALS
+    # points at a service-account file. Voices are Google Cloud WaveNet names.
+    PODCAST_ENABLED: bool = False
+    PODCAST_LANGUAGE_CODE: str = "de-DE"
+    PODCAST_VOICE_HOST: str = "de-DE-Wavenet-B"
+    PODCAST_VOICE_GUEST: str = "de-DE-Wavenet-A"
+    PODCAST_SPEAKING_RATE: float = 1.05
+    PODCAST_MAX_BYTES: int = 8 * 1024 * 1024
+
     # App
     DEBUG: bool = False
     ENVIRONMENT: str = "development"

@@ -17,8 +17,8 @@ frontend (Next.js)  ──REST/JWT──▶  API layer  ──▶  service layer
 | Layer | Location | Responsibility |
 |---|---|---|
 | API | `app/api/v1/` | Request validation (Pydantic), authentication dependency, mapping domain errors to HTTP status codes |
-| Services | `app/services/` | Use cases and transactions: `AuthService`, `SourceService`, `ScheduleService`, `DigestService`, `DeliveryService`, `ScheduleRunner` |
-| Integrations | `app/integrations/` | External APIs (Groq via the OpenAI-compatible endpoint, with retries) |
+| Services | `app/services/` | Use cases and transactions: `AuthService`, `SourceService`, `ScheduleService`, `DigestService`, `PodcastService`, `DeliveryService`, `ScheduleRunner` |
+| Integrations | `app/integrations/` | External APIs (Groq via the OpenAI-compatible endpoint, Google Cloud Text-to-Speech; both with retries) |
 | Persistence | `app/db/` | SQLAlchemy 2.0 typed models, session factory; schema owned by Alembic migrations |
 
 ## Data model
@@ -50,8 +50,27 @@ the scheduler:
 4. Ask the LLM to pick the `max_articles` most relevant items for the profile and summarise
    them in the requested language. If the API key is missing or the call fails, an extractive
    digest (titles, feed summaries, links) is produced instead.
-5. Store the digest, advance `next_run_at`, then deliver to every enabled channel. Each channel
-   reports `sent`, `failed` or `error: …` independently.
+5. Store the digest and advance `next_run_at`.
+6. If the audio digest is switched on, rewrite the digest as a two-voice dialogue, synthesise it
+   and keep the MP3 in memory. Every failure here is logged and swallowed — step 7 runs either way.
+7. Deliver to every enabled channel. Each channel reports `sent`, `failed` or `error: …`
+   independently; the audio file is uploaded to Discord after the text and reported separately
+   as `podcast`, so a rejected attachment never marks the digest itself as failed.
+
+## Audio digest
+
+Optional, off by default. `PodcastService.build_episode()` asks the same Groq model that wrote
+the digest to turn it into a dialogue between two hosts, one line per speaker, each line prefixed
+`ALEX:` or `SARA:`. Lines without a marker — stage directions the model sometimes adds — are
+dropped rather than read aloud in the wrong voice.
+
+Each line is then synthesised separately through Google Cloud Text-to-Speech with its speaker's
+WaveNet voice, and the MP3 segments are concatenated. MP3 frames are self-contained, so this
+produces one playable file without re-encoding and without a media library in the dependency set.
+
+The feature is skipped silently unless `PODCAST_ENABLED` is true *and*
+`GOOGLE_APPLICATION_CREDENTIALS` points at a readable service-account file. A missing key, an
+exhausted quota or a malformed script all end in the same place: no audio, text digest delivered.
 
 ## Scheduler
 
@@ -79,6 +98,10 @@ cron job or a PaaS cron trigger.
 Settings are read by `app/config.py` (pydantic-settings). `DATABASE_URL` and `SECRET_KEY`
 are required and validated at import time: a missing value, a key shorter than 32 characters
 or a placeholder like `changeme` stops the process before it serves a request.
+
+Everything else is optional and degrades on its own: without `GROQ_API_KEY` digests fall back to
+extractive summaries, without SendGrid the e-mail channel is unavailable, and without
+`PODCAST_ENABLED` plus Google credentials no audio is produced.
 
 ## Testing
 

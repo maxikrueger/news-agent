@@ -1,5 +1,6 @@
 """Delivery service for sending digests to Discord and Email"""
 
+import json
 import logging
 from datetime import UTC, datetime
 
@@ -68,6 +69,58 @@ class DeliveryService:
         except Exception as e:
             logger.error(f"Error sending to Discord: {e}")
             return False
+
+    @staticmethod
+    def deliver_file_via_discord(
+        webhook_url: str,
+        filename: str,
+        data: bytes,
+        content: str = "",
+        username: str = "News Agent",
+        max_bytes: int = 8 * 1024 * 1024,
+    ) -> bool:
+        """Upload a file (the audio digest) to Discord as a webhook attachment.
+
+        Webhook uploads are capped by Discord; anything larger is rejected with a
+        413, so the size is checked before the request rather than after.
+        """
+        if not webhook_url:
+            logger.error("Discord webhook URL is empty")
+            return False
+
+        if not data:
+            logger.error("Refusing to upload an empty file to Discord")
+            return False
+
+        if len(data) > max_bytes:
+            logger.error(
+                "Attachment is %d KB, above the %d KB webhook limit - skipping upload",
+                len(data) // 1024,
+                max_bytes // 1024,
+            )
+            return False
+
+        try:
+            response = requests.post(
+                webhook_url,
+                data={"payload_json": json.dumps({"content": content, "username": username})},
+                files={"file": (filename, data, "audio/mpeg")},
+                timeout=60,
+            )
+        except requests.Timeout:
+            logger.error("Discord file upload timed out")
+            return False
+        except Exception as e:
+            logger.error(f"Error uploading file to Discord: {e}")
+            return False
+
+        # 204 without ?wait=true, 200 when Discord echoes the created message
+        if response.status_code in (200, 204):
+            logger.info(f"Discord attachment {filename} ({len(data) // 1024} KB) sent successfully")
+            return True
+
+        logger.error(f"Discord file upload error {response.status_code}: {response.text}")
+        return False
 
     @staticmethod
     def deliver_via_email(

@@ -30,6 +30,7 @@ dependencies = [
     "python-dotenv==1.0.0",
     "tenacity==8.2.3",
     "sendgrid==6.12.5",
+    "google-cloud-texttospeech==2.21.1",
 ]
 
 [project.optional-dependencies]

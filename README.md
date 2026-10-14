@@ -11,7 +11,7 @@ Users register, add the feeds they care about, describe their interests in a sen
 ("AI regulation in the EU, robotics startups") and pick a cron schedule. At each run the
 backend fetches the latest articles, removes duplicates, asks an LLM to select and summarise
 the most relevant ones for that profile, stores the digest and sends it to the configured
-channels.
+channels — optionally with the whole briefing rendered as a two-voice audio episode.
 
 ![Digest history with an AI-generated briefing](docs/screenshots/digests.png)
 
@@ -34,6 +34,8 @@ channels.
 - **LLM summarisation** via Groq (Llama 3.3 70B); falls back to a plain article list when the API is unavailable
 - **Duplicate detection** across feeds (exact hash + word-overlap similarity)
 - **Delivery** to Discord webhooks (auto-chunked to the 2000-char limit) and e-mail via SendGrid
+- **Audio digest** (optional): the briefing is rewritten as a dialogue between two hosts and
+  synthesised with Google Cloud WaveNet voices, then attached to the Discord message as an MP3
 - **Background scheduler** that runs due schedules; a broken schedule never blocks the others
 - **Digest history** and "run now" from the dashboard
 
@@ -53,6 +55,7 @@ flowchart LR
     RUN --> DB
     RUN --> RSS["RSS feeds"]
     RUN --> LLM["Groq LLM"]
+    RUN --> TTS["Google Cloud TTS<br/>optional audio digest"]
     RUN --> OUT["Discord · SendGrid"]
 ```
 
@@ -66,9 +69,9 @@ More detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 |---|---|
 | Backend | Python 3.12, FastAPI, SQLAlchemy 2.0 (typed `Mapped` models), Alembic, Pydantic v2 |
 | Auth | JWT (python-jose), Argon2 password hashing, httpOnly cookie or Bearer header |
-| Integrations | Groq via the OpenAI SDK, feedparser, croniter, SendGrid, Discord webhooks |
+| Integrations | Groq via the OpenAI SDK, Google Cloud Text-to-Speech, feedparser, croniter, SendGrid, Discord webhooks |
 | Frontend | Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS 4, NextAuth, React Hook Form, Zod |
-| Quality | pytest (95 tests, ~83 % coverage), ruff, mypy, ESLint |
+| Quality | pytest (109 tests, ~82 % coverage), ruff, mypy, ESLint |
 | Ops | Docker Compose, GitHub Actions (lint, types, tests, migrations against PostgreSQL) |
 
 ## Quick start (Docker)
@@ -85,6 +88,12 @@ docker compose up --build
 
 `GROQ_API_KEY` and `SENDGRID_API_KEY` (plus a verified `SENDGRID_FROM_EMAIL`) are optional. Without them, digests are plain
 article lists and the e-mail channel is unavailable; everything else works.
+
+The audio digest is off by default. To switch it on, set `PODCAST_ENABLED=true` and point
+`GOOGLE_APPLICATION_CREDENTIALS` at a Google Cloud service-account JSON with the Text-to-Speech
+API enabled. WaveNet's free tier covers one million characters a month, which is far more than a
+daily five-minute episode needs. Voices and speaking rate are configurable
+(`PODCAST_VOICE_HOST`, `PODCAST_VOICE_GUEST`, `PODCAST_SPEAKING_RATE`).
 
 ## Local development
 
@@ -133,7 +142,9 @@ npm run lint && npx tsc --noEmit && npm run build
   `ScheduleRunner` raises a domain error (`ScheduleRunError`) that the API turns into `400`
   and the scheduler logs and skips.
 - **Graceful degradation.** LLM failures fall back to an extractive digest; one failing
-  delivery channel does not stop the others.
+  delivery channel does not stop the others; and the audio digest is skipped — not retried,
+  not raised — whenever it is off, unconfigured or the synthesis fails, so a text digest is
+  never lost to an optional extra.
 - **Schema drift is a CI failure.** Models are checked against the Alembic migrations on a real
   PostgreSQL instance with `alembic check`.
 
@@ -154,6 +165,9 @@ applicable copyright and press-publisher rights.
 - The scheduler is a single polling process; running several replicas would need a row lock
   (`SELECT … FOR UPDATE SKIP LOCKED`) around due schedules.
 - Frontend has no automated tests yet.
+- The audio digest goes to Discord only and is not stored: it is generated per run, attached to
+  the message and discarded. Playing an older episode from the digest history would need a
+  storage layer, and e-mail attachments would need the same file to survive the request.
 
 ## Project structure
 
@@ -161,8 +175,8 @@ applicable copyright and press-publisher rights.
 backend/
   app/
     api/v1/          REST endpoints (thin: validation, auth, error mapping)
-    services/        use cases: auth, sources, schedules, digest, delivery, runner
-    integrations/    Groq client
+    services/        use cases: auth, sources, schedules, digest, podcast, delivery, runner
+    integrations/    Groq client, Google Cloud TTS client
     db/              SQLAlchemy models and session handling
     schemas/         Pydantic request/response models
     scheduler.py     background runner for due schedules
